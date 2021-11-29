@@ -159,6 +159,8 @@ ui = dashboardPage(
                         tags$hr(),
                         actionButton(inputId = "GoButton", label = "Go!!!",  icon("sync")),
                         tags$hr(),
+                        downloadButton("LDAproboutput", "Topic Probability"),
+                        tags$hr(),
                         numericInput(
                             "percentcf",
                             min = 0.01,
@@ -169,7 +171,7 @@ ui = dashboardPage(
                                 tags$i(
                                     class = "glyphicon glyphicon-info-sign",
                                     style = "color:#0072B2;",
-                                    title = "Extracting "
+                                    title = "Extract document with 0.25% topic probablity or more by mentioning topic probabilty at Percent Cut-off."
                                 )
                             )
                         ),
@@ -219,6 +221,9 @@ ui = dashboardPage(
                                 )
                             )
                         ),
+                        tags$hr(),
+                        downloadButton("LSAproboutput", "Topic Probability"),
+                        tags$hr(),
                         numericInput(
                             "percentcf_lsa",
                             min = 0.01,
@@ -229,7 +234,7 @@ ui = dashboardPage(
                                 tags$i(
                                     class = "glyphicon glyphicon-info-sign",
                                     style = "color:#0072B2;",
-                                    title = "Extracting "
+                                    title = "Extract document with 0.25% topic probablity or more by mentioning topic probabilty at Percent Cut-off."
                                 )
                             )
                         ),
@@ -590,7 +595,7 @@ server = function(input, output, session) {
         reqLDA = pagesLDA()
         #Calculating Document length for LDAvis
         doc.length = sapply(reqLDA, function(x)
-            sum(x[2, ]))
+            sum(x[2,]))
     })
     
     #Term Frequency
@@ -733,7 +738,7 @@ server = function(input, output, session) {
         })
         doc_with_topic$cleaned_text = as.character(doc_with_topic$cleaned_text)
         ID = paste(input$ID)
-        doc_with_topic = doc_with_topic[doc_with_topic[, ID] %in% names(corpusClean$text), ]
+        doc_with_topic = doc_with_topic[doc_with_topic[, ID] %in% names(corpusClean$text),]
         ntopics = input$nTopics
         pcf = input$percentcf
         
@@ -751,13 +756,54 @@ server = function(input, output, session) {
     
     output$downloadtopicfile = downloadHandler(
         filename = function() {
-            paste("Topic Document", Sys.Date(), ".xlsx", sep = "-")
+            paste("LDA_Output_", Sys.Date(), ".xlsx", sep = "")
         },
         content = function(file) {
             doc_with_topic = doc_with_topic()
             write_xlsx(doc_with_topic, file)
         }
     )
+    
+    doc_with_prob_lda = reactive({
+        doc_topic_dist = as.data.frame(theta())
+        toscacorpus = toscacorpus()
+        corpusClean = corpusClean()
+        doc_with_topic = datafile_org()
+        Text = paste(input$Text)
+        doc_with_topic$cleaned_text = lapply(doc_with_topic[, Text], function(x) {
+            x = tolower(x)  # Transform to lowercase
+            x = gsub("@\\w+", "", x) #Remove Username
+            x = gsub("[[:punct:]]", "", x) # Remove Punctuation
+            x = gsub("http\\w+", "", x) #Remove URLS
+            x = gsub("https\\w+", "", x) #Remove URLS
+            x = gsub("[ |\t]{2,}", "", x) #Remove Tabs
+            # x = gsub("na na","", x)  #Remove "na na"
+            # x = gsub("na","", x)  #Remove "na"
+            x = gsub("[^0-9A-Za-z///' ]", "'", x)  #Remove special chars
+            x = gsub("'", "", x)  #Remove '
+            x = gsub("[[:digit:]]+", "", x)  #Remove digits
+            x = gsub(pattern = "[/]", replacement = " ", x)  #Replace / with space
+            x = gsub("^[[:space:]]+", "", x)  #Remove white space at the beginning of a sting
+            x = gsub("[[:space:]]+$", "", x)  #Remove white space at the end of a string
+            x = stri_trim(x, side = c("both", "left", "right"))  #Remove white space from start and end of a string
+            x = str_squish(x)  # Reduce repeated white space inuniqueide a string
+        })
+        doc_with_topic$cleaned_text = as.character(doc_with_topic$cleaned_text)
+        ID = paste(input$ID)
+        doc_with_topic = doc_with_topic[doc_with_topic[, ID] %in% names(corpusClean$text),]
+        doc_with_prob  = merge(doc_with_topic, doc_topic_dist, by = "row.names")
+        return(doc_with_prob)
+    })
+    
+    output$LDAproboutput = downloadHandler(
+        filename = function() {
+            paste("LDA_Probability_Score_", Sys.Date(), ".xlsx", sep = "")
+        },
+        content = function(file) {
+            write_xlsx(doc_with_prob_lda(), file)
+        }
+    )
+    
     
     # LSA
     #Column Selection
@@ -934,11 +980,84 @@ server = function(input, output, session) {
     
     output$LSAoutput = downloadHandler(
         filename = function() {
-            paste("Topic Document", Sys.Date(), ".xlsx", sep = "-")
+            paste("LSA_Output_", Sys.Date(), ".xlsx", sep = "")
         },
         content = function(file) {
             doc_with_topic = doc_with_topic_lsa()
             write_xlsx(doc_with_topic, file)
+        }
+    )
+    
+    doc_with_prob_lsa = reactive({
+        # progress = Progress$new(session, min=0, max=1)
+        # on.exit(progress$close())
+        #
+        # progress$set(message = 'Calculation in progress',
+        #              detail = 'This may take a while...')
+        #
+        LSAresult = LSAresult()
+        dtm = dtm()
+        # Get the top terms of each topic
+        LSAresult$top_terms = GetTopTerms(phi = LSAresult$phi, M = 10)
+        
+        # Get the prevalence of each topic
+        # You can make this discrete by applying a threshold, say 0.05, for
+        # topics in/out of docuemnts.
+        LSAresult$prevalence = colSums(LSAresult$theta) / sum(LSAresult$theta) * 100
+        
+        # textmineR has a naive topic labeling tool based on probable bigrams
+        LSAresult$labels = LabelTopics(
+            assignments = LSAresult$theta > 0.05,
+            dtm = dtm,
+            M = 1
+        )
+        
+        # put them together, with coherence into a summary table
+        LSAresult$summary = data.frame(
+            topic = rownames(LSAresult$phi),
+            # label = LSAresult$labels,
+            # coherence = round(LSAresult$coherence, 3),
+            # prevalence = round(LSAresult$prevalence,3),
+            top_terms = apply(LSAresult$top_terms, 2, function(x) {
+                paste(x, collapse = ", ")
+            }),
+            stringsAsFactors = FALSE
+        )
+        
+        LSAmodel_summ = LSAresult$summary
+        
+        doc_topic_dist = as.data.frame(LSAresult$theta)
+        doc_with_topic = datafile_org()
+        Text = paste(input$Text_lsa)
+        doc_with_topic$cleaned_text = lapply(doc_with_topic[, Text], function(x) {
+            x = tolower(x)  # Transform to lowercase
+            x = gsub("@\\w+", "", x) #Remove Username
+            x = gsub("[[:punct:]]", "", x) # Remove Punctuation
+            x = gsub("http\\w+", "", x) #Remove URLS
+            x = gsub("https\\w+", "", x) #Remove URLS
+            x = gsub("[ |\t]{2,}", "", x) #Remove Tabs
+            # x = gsub("na na","", x)  #Remove "na na"
+            # x = gsub("na","", x)  #Remove "na"
+            x = gsub("[^0-9A-Za-z///' ]", "'", x)  #Remove special chars
+            x = gsub("'", "", x)  #Remove '
+            x = gsub("[[:digit:]]+", "", x)  #Remove digits
+            x = gsub(pattern = "[/]", replacement = " ", x)  #Replace / with space
+            x = gsub("^[[:space:]]+", "", x)  #Remove white space at the beginning of a sting
+            x = gsub("[[:space:]]+$", "", x)  #Remove white space at the end of a string
+            x = stri_trim(x, side = c("both", "left", "right"))  #Remove white space from start and end of a string
+            x = str_squish(x)  # Reduce repeated white space inuniqueide a string
+        })
+        doc_with_topic$cleaned_text = as.character(doc_with_topic$cleaned_text)
+        doc_with_prob  = merge(doc_with_topic, doc_topic_dist, by = "row.names")
+        return(doc_with_prob)
+    })
+    
+    output$LSAproboutput = downloadHandler(
+        filename = function() {
+            paste("LSA_Probability_Score_", Sys.Date(), ".xlsx", sep = "")
+        },
+        content = function(file) {
+            write_xlsx(doc_with_prob_lsa(), file)
         }
     )
     
@@ -1092,11 +1211,12 @@ server = function(input, output, session) {
     
     output$downloadsum = downloadHandler(
         filename = function() {
-            paste("Data_Summary",
+            paste("Data_Summary_Output_",
                   input$second,
+                  "_",
                   Sys.Date(),
                   ".xlsx",
-                  sep = "-")
+                  sep = "")
         },
         content = function(file) {
             df = summdata()
